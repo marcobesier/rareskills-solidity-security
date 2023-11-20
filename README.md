@@ -689,3 +689,83 @@ contract PredictTheBlockhashTest is Test {
     receive() external payable {}
 }
 ```
+
+## Capture the Ether (RareSkills Repo) - Token Whale
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+contract TokenWhale {
+    address player;
+
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    string public name = "Simple ERC20 Token";
+    string public symbol = "SET";
+    uint8 public decimals = 18;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    constructor(address _player) {
+        player = _player;
+        totalSupply = 1000;
+        balanceOf[player] = 1000;
+    }
+
+    function isComplete() public view returns (bool) {
+        return balanceOf[player] >= 1000000;
+    }
+
+    function _transfer(address to, uint256 value) internal {
+        unchecked {
+            balanceOf[msg.sender] -= value;
+            balanceOf[to] += value;
+        }
+
+        emit Transfer(msg.sender, to, value);
+    }
+
+    function transfer(address to, uint256 value) public {
+        require(balanceOf[msg.sender] >= value);
+        require(balanceOf[to] + value >= balanceOf[to]);
+
+        _transfer(to, value);
+    }
+
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    function approve(address spender, uint256 value) public {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+    }
+
+    function transferFrom(address from, address to, uint256 value) public {
+        require(balanceOf[from] >= value);
+        require(balanceOf[to] + value >= balanceOf[to]);
+        require(allowance[from][msg.sender] >= value);
+
+        allowance[from][msg.sender] -= value;
+        _transfer(to, value);
+    }
+}
+```
+
+## Exploit
+
+This challenge is conveniently solved via Remix. To increase the `player`'s token balance to 1M (or more), we'll use two different accounts and perform the following sequence of function calls:
+
+1. Set `_player` to an EOA you control, e.g., the first of Remix' default accounts. This will give `player` an account balance of 1000.
+2. Next, approve a second EOA you control, e.g., the second of Remix' default accounts, with `value = 1`. Ensure to make this function call from `player`'s account.
+3. Now, call `transferFrom(player, player, 1)` from the second EOA. At first sight, one would assume that this wouldn't change anything since we're just sending `value = 1` from the `player` to the `player`. However, by taking a closer look at the implementation of `_transfer`, we see that this call will underflow the second EOA's balance (and add 1 to the `player`'s balance). In other words, after this call, `player` has a balance of 1001 while the second EOA has a balance of `2**256 - 1`!
+4. Lastly, we can use `transfer` to transfer `value = 998999` (or more) from the second EOA to `player`, leaving `player` with a balance of 1000000 (or more).
+
+Note that the `to` argument in the above call to `transferFrom` can actually be chosen arbitrarily. The important point in the above sequence is not that we increase the `player`'s balance from 1000 to 1001, but that we underflow the balance of our second EOA so that this account has enough tokens to bump up `player`'s balance to 1M or more. 
