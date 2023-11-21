@@ -63,6 +63,102 @@ In other words,  if we call `buy` and specify `numTokens = 115792089237316195423
 
 After calling `buy` in this way, the contract's new balance is 1.415992086870360064 ether, i.e., it didn't even earn the price of a single token (1 ether) but issued an insane amount of tokens to us. We can subsequently call `sell` with `numTokens = 1` to earn 1 ether from the contract, resulting in a contract balance of 0.415992086870360064 ether (< 1 ether), which completes the challenge.
 
+## Capture the Ether (RareSkills Repo) - Retirement Fund
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+contract RetirementFund {
+    uint256 startBalance;
+    address owner = msg.sender;
+    address beneficiary;
+    uint256 expiration = block.timestamp + 520 weeks;
+
+    constructor(address player) payable {
+        require(msg.value == 1 ether);
+
+        beneficiary = player;
+        startBalance = msg.value;
+    }
+
+    function isComplete() public view returns (bool) {
+        return address(this).balance == 0;
+    }
+
+    function withdraw() public {
+        require(msg.sender == owner);
+
+        if (block.timestamp < expiration) {
+            // early withdrawal incurs a 10% penalty
+            (bool ok, ) = msg.sender.call{
+                value: (address(this).balance * 9) / 10
+            }("");
+            require(ok, "Transfer to msg.sender failed");
+        } else {
+            (bool ok, ) = msg.sender.call{value: address(this).balance}("");
+            require(ok, "Transfer to msg.sender failed");
+        }
+    }
+
+    function collectPenalty() public {
+        require(msg.sender == beneficiary);
+        uint256 withdrawn = 0;
+        unchecked {
+            withdrawn += startBalance - address(this).balance;
+
+            // an early withdrawal occurred
+            require(withdrawn > 0);
+        }
+
+        // penalty is what's left
+        (bool ok, ) = msg.sender.call{value: address(this).balance}("");
+        require(ok, "Transfer to msg.sender failed");
+    }
+}
+```
+
+### Exploit
+
+This challenge is conveniently solved via Remix. First, deploy the contract from Remix's default account. Set `player` to the address of that default account so that it becomes the `beneficiary`.
+
+Next, observe that `collectPenalty` contains a vulnerable `unchecked` block. Suppose we can somehow achieve `startBalance < address(this).balance`. In that case, `withdrawn` will underflow, pass `require(withdrawn > 0)`, and, therefore, allow us to transfer the contract's entire balance to our account by calling `collectPenalty`.
+
+Unfortunately, the contract does _not_ implement:
+- a `fallback` function
+- a `receive` function
+- any `payable` functions (except the constructor which is restricted to receiving exactly 1 ether)
+
+Therefore, one could naively assume that it is not possible to send any more ether to the contract to achieve `startBalance < address(this).balance`.
+
+However, we can force-send ether by calling the `selfdestruct` instruction on another contract containing funds, and specifying the `RetirementFund` as the target!
+
+Thus, we can carry out our attack as follows:
+
+1. Deploy a second contract (see below) **with an initial balance of 1 wei**.
+2. Call `forceSend`, specifying `RetirementFund`'s address as the target. This will lead to `startBalance < address(this).balance` on the `RetirementFund` contract since the new values will be `startBalance == 1 ether` and `address(this).balance == 1 ether + 1 wei`
+3. Call `collectPenalty`. Because `startBalance < address(this).balance`, `withdrawn` will underflow, pass `require > 0`, and result in a transfer of the contract's entire balance to our account.
+
+NOTE: At the time of writing, `selfdestruct` has been deprecated. The underlying opcode will eventually undergo breaking changes. Therefore, this solution might no longer be valid depending on when you're reading this.
+
+```solidity
+// SPDX-License-Identifier: UNLICENSE
+pragma solidity ^0.8.0;
+
+contract ForceSend {
+    // This constructor is payable, allowing the contract to be deployed with 1 wei.
+    constructor() payable {}
+
+    // Function to force-send Ether to a target address.
+    function forceSend(address payable target) external {
+        // The selfdestruct function sends all remaining Ether and destroys the contract.
+        selfdestruct(target);
+    }
+}
+```
+
 # Security - Week 1
 
 ## Capture the Ether (RareSkills Repo) - Guess the Secret Number
@@ -762,8 +858,8 @@ contract TokenWhale {
 
 This challenge is conveniently solved via Remix. To increase the `player`'s token balance to 1M (or more), we'll use two different accounts and perform the following sequence of function calls:
 
-1. Set `_player` to an EOA you control, e.g., the first of Remix' default accounts. This will give `player` an account balance of 1000.
-2. Next, approve a second EOA you control, e.g., the second of Remix' default accounts, with `value = 1`. Ensure to make this function call from `player`'s account.
+1. Set `_player` to an EOA you control, e.g., the first of Remix's default accounts. This will give `player` an account balance of 1000.
+2. Next, approve a second EOA you control, e.g., the second of Remix's default accounts, with `value = 1`. Ensure to make this function call from `player`'s account.
 3. Now, call `transferFrom(player, player, 1)` from the second EOA. At first sight, one would assume that this wouldn't change anything since we're just sending `value = 1` from the `player` to the `player`. However, by taking a closer look at the implementation of `_transfer`, we see that this call will underflow the second EOA's balance (and add 1 to the `player`'s balance). In other words, after this call, `player` has a balance of 1001 while the second EOA has a balance of `2**256 - 1`!
 4. Lastly, we can use `transfer` to transfer `value = 998999` (or more) from the second EOA to `player`, leaving `player` with a balance of 1000000 (or more).
 
