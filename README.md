@@ -257,6 +257,65 @@ contract SideEntranceLenderPoolAttacker {
 } 
 ```
 
+## Ethernaut - Naught Coin
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract NaughtCoin is ERC20 {
+
+  // string public constant name = 'NaughtCoin';
+  // string public constant symbol = '0x0';
+  // uint public constant decimals = 18;
+  uint public timeLock = block.timestamp + 10 * 365 days;
+  uint256 public INITIAL_SUPPLY;
+  address public player;
+
+  constructor(address _player) 
+  ERC20('NaughtCoin', '0x0') {
+    player = _player;
+    INITIAL_SUPPLY = 1000000 * (10**uint256(decimals()));
+    // _totalSupply = INITIAL_SUPPLY;
+    // _balances[player] = INITIAL_SUPPLY;
+    _mint(player, INITIAL_SUPPLY);
+    emit Transfer(address(0), player, INITIAL_SUPPLY);
+  }
+  
+  function transfer(address _to, uint256 _value) override public lockTokens returns(bool) {
+    super.transfer(_to, _value);
+  }
+
+  // Prevent the initial owner from transferring tokens until the timelock has passed
+  modifier lockTokens() {
+    if (msg.sender == player) {
+      require(block.timestamp > timeLock);
+      _;
+    } else {
+     _;
+    }
+  } 
+} 
+```
+
+### Exploit
+
+This challenge is conveniently solved via Remix. The goal is to transfer all tokens from the `player`'s account to another address. At first sight, this looks like an impossible thing to do because the `lockTokens` modifier prevents the `player` from executing `transfer` during the first 10 years after contract deployment.
+
+However, notice that the ERC-20 interface exposes _two_ functions that facilitate token transfers: `transfer` and `transferFrom`. 
+
+In the above contract, `transfer` is overridden and protected by `lockTokens`. `transferFrom`, however, is _not_ overridden and, in particular, _not_ protected by the `lockTokens` modifier!
+
+Therefore, we can solve this challenge using the following steps:
+
+1. Deploy the contract, setting `_player` to an address we control.
+2. Use `player`'s account to approve a second account we control for the entire `INITIAL_SUPPLY`.
+3. Call `transferFrom` from our second account, specifying `player` as the `_from` parameter and `INITIAL_SUPPLY` for the `_value` parameter. Since the only goal of the challenge is to remove all tokens from the `player`'s account, we can specify an arbitrary address for the `_to` parameter (except the `player`'s address). 
+
 # Security - Week 1
 
 ## Capture the Ether (RareSkills Repo) - Guess the Secret Number
