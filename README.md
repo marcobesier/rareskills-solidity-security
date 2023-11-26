@@ -111,9 +111,7 @@ describe(NAME, function () {
         });
     });
 });
-```
-
-### Contract
+``
 
 # Security - Week 2
 
